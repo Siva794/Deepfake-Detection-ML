@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Deepfake Detector</title>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+
+<body>
+  <!-- Navbar -->
+  <nav class="navbar">
+    <div class="nav-title">🧠 Deepfake Detector</div>
+  </nav>
+
+  <!-- Main Content -->
+  <div class="container">
+    <h2 class="subtitle">Detect if your image is AI-generated or real</h2>
+
+    <form id="uploadForm" action="/predict" method="post" enctype="multipart/form-data" onsubmit="showLoader()">
+      <label class="upload-box" for="file">
+        <input type="file" id="file" name="file" accept="image/*" multiple required onchange="previewImages(event)">
+        <span id="uploadText">📁 Click or drag multiple images here</span>
+      </label>
+      <button type="submit" id="detectBtn">🔍 Analyze Images</button>
+    </form>
+
+    <div id="previewContainer" class="preview-grid"></div>
+
+    <div id="loader" class="loader">
+      <div class="spinner"></div>
+      <p>Analyzing images...</p>
+    </div>
+
+    {% if results %}
+    <div class="results-section">
+      <h2>🔍 Results</h2>
+      <div class="results-grid">
+        {% for r in results %}
+        <div class="result-card fade-in">
+          <img src="{{ r.path }}" alt="Uploaded Image">
+          <div class="label {% if 'Fake' in r.label %}fake{% else %}real{% endif %}">{{ r.label }}</div>
+          <div class="conf">Real: {{ r.real_conf }}% | Fake: {{ r.fake_conf }}%</div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+  </div>
+
+  <script>
+    function previewImages(event) {
+      const previewContainer = document.getElementById('previewContainer');
+      previewContainer.innerHTML = '';
+      const files = event.target.files;
+      for (let i = 0; i < files.length; i++) {
+        const reader = new FileReader();
+        reader.onload = function(e) {
+          const div = document.createElement('div');
+          div.classList.add('preview-card');
+          div.innerHTML = `<img src="${e.target.result}" alt="preview">`;
+          previewContainer.appendChild(div);
+        };
+        reader.readAsDataURL(files[i]);
+      }
+    }
+
+    function showLoader() {
+      document.getElementById('loader').style.display = 'flex';
+    }
+  </script>
+</body>
+</html>
