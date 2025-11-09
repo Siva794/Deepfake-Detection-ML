@@ -7,140 +7,161 @@
   <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;500;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
   <style>
-    /* minimal safe defaults if style.css missing */
-    body {font-family: Poppins, system-ui, -apple-system, sans-serif; margin:0; background:#0b0b0f; color:#eaeaf2}
-    .navbar {padding:16px; background:#14141d; border-bottom:1px solid #262637}
-    .nav-title {font-weight:700}
-    .container {max-width:1100px; margin:0 auto; padding:24px}
-    .upload-box {display:block; border:2px dashed #3b3b57; padding:28px; border-radius:12px; text-align:center; cursor:pointer}
-    .preview-grid, .results-grid {display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:16px; margin-top:16px}
-    .preview-card, .result-card {background:#14141d; border:1px solid #262637; border-radius:12px; overflow:hidden}
-    .preview-card img, .result-card img {width:100%; display:block; aspect-ratio:1/1; object-fit:cover}
-    .label {padding:8px 10px; font-weight:700}
-    .label.real {color:#1bd96a}
-    .label.fake {color:#ff5252}
-    .conf {padding:0 10px 10px 10px; font-size:14px; color:#b9b9d1}
-    .btn {margin-top:12px; padding:12px 16px; border:none; border-radius:10px; background:#5b61ff; color:white; font-weight:700; cursor:pointer}
-    .btn:disabled {opacity:.6; cursor:not-allowed}
-    .loader {display:none; align-items:center; gap:10px; margin-top:16px}
-    .spinner {width:16px; height:16px; border:3px solid #3b3b57; border-top-color:#fff; border-radius:50%; animation:spin 1s linear infinite}
-    @keyframes spin {to{transform:rotate(360deg)}}
-    .error {margin-top:12px; color:#ff7676}
+    /* Minimal inline hardening so it looks fine without style.css */
+    body { font-family: Poppins, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin:0; }
+    .navbar { padding: 12px 16px; border-bottom: 1px solid #eee; }
+    .nav-title { font-weight:700; }
+    .container { max-width: 980px; margin: 32px auto; padding: 0 16px; }
+    .subtitle { font-weight:500; opacity:.85 }
+    form { margin: 16px 0; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+    .upload-box { border:2px dashed #ccc; padding:16px; border-radius:10px; cursor:pointer; flex: 1; text-align:center; }
+    #detectBtn { padding:12px 16px; border:0; border-radius:10px; cursor:pointer; }
+    .preview-grid, .results-grid { display:grid; grid-template-columns: repeat(auto-fill,minmax(180px,1fr)); gap:12px; margin-top:16px; }
+    .preview-card, .result-card { border:1px solid #eee; border-radius:10px; overflow:hidden; background:#fff; }
+    .preview-card img, .result-card img { width:100%; height:180px; object-fit:cover; display:block; }
+    .label { padding:8px 10px; font-weight:600; }
+    .label.real { color:#0a7d2b; }
+    .label.fake { color:#b00020; }
+    .conf { padding:0 10px 10px; font-size:.9rem; opacity:.8; }
+    .loader { display:none; align-items:center; gap:10px; margin-top:12px; }
+    .spinner { width:18px; height:18px; border-radius:50%; border:3px solid #ddd; border-top-color:#000; animation:spin 1s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .error { color:#b00020; margin-top:12px; }
   </style>
 </head>
 <body>
-  <nav class="navbar">
-    <div class="nav-title">🧠 Deepfake Detector</div>
-  </nav>
+  <nav class="navbar"><div class="nav-title">🧠 Deepfake Detector</div></nav>
 
   <div class="container">
     <h2 class="subtitle">Detect if your image is AI-generated or real</h2>
 
-    <!-- IMPORTANT: No action="/predict" here; we handle submit in JS -->
     <form id="uploadForm">
       <label class="upload-box" for="file">
-        <input type="file" id="file" name="file" accept="image/*" multiple required />
+        <input type="file" id="file" name="file" accept="image/*" multiple required>
         <span id="uploadText">📁 Click or drag multiple images here</span>
       </label>
-      <button type="submit" class="btn" id="detectBtn">🔍 Analyze Images</button>
-      <div id="loader" class="loader"><div class="spinner"></div><p>Analyzing images...</p></div>
-      <div id="error" class="error"></div>
+      <button type="submit" id="detectBtn">🔍 Analyze Images</button>
     </form>
 
     <div id="previewContainer" class="preview-grid"></div>
 
-    <div id="results" class="results-section" style="display:none;">
+    <div id="loader" class="loader">
+      <div class="spinner"></div>
+      <p>Analyzing images...</p>
+    </div>
+
+    <div id="errorBox" class="error"></div>
+
+    <div id="resultsSection" class="results-section" style="display:none;">
       <h2>🔍 Results</h2>
       <div id="resultsGrid" class="results-grid"></div>
     </div>
   </div>
 
   <script>
-    // >>>> SET THIS to your deployed Flask endpoint <<<<
-    const API_URL = "https://YOUR-BACKEND-URL/predict";
+    // 👉 IMPORTANT: set this to your deployed Flask backend (must be HTTPS)
+    const BACKEND_URL = "https://YOUR-BACKEND-URL"; // e.g. https://deepfake-detector.onrender.com
 
     const fileInput = document.getElementById('file');
     const previewContainer = document.getElementById('previewContainer');
-    const form = document.getElementById('uploadForm');
-    const btn = document.getElementById('detectBtn');
+    const uploadForm = document.getElementById('uploadForm');
     const loader = document.getElementById('loader');
-    const errorBox = document.getElementById('error');
-    const resultsSection = document.getElementById('results');
+    const errorBox = document.getElementById('errorBox');
+    const resultsSection = document.getElementById('resultsSection');
     const resultsGrid = document.getElementById('resultsGrid');
 
-    // Show local previews (no upload)
-    fileInput.addEventListener('change', () => {
+    // Keep a list of previews in the same order as chosen files
+    let previews = [];
+
+    fileInput.addEventListener('change', async (e) => {
+      previews = [];
       previewContainer.innerHTML = '';
-      const files = fileInput.files;
+      const files = e.target.files;
+      if (!files || !files.length) return;
+
       for (let i = 0; i < files.length; i++) {
-        const url = URL.createObjectURL(files[i]);
-        const div = document.createElement('div');
-        div.className = 'preview-card';
-        div.innerHTML = `<img src="${url}" alt="preview">`;
-        previewContainer.appendChild(div);
+        const file = files[i];
+        const url = await readAsDataURL(file);
+        previews.push(url);
+
+        const card = document.createElement('div');
+        card.className = 'preview-card';
+        card.innerHTML = `<img src="${url}" alt="preview">`;
+        previewContainer.appendChild(card);
       }
-      resultsSection.style.display = 'none';
-      resultsGrid.innerHTML = '';
-      errorBox.textContent = '';
     });
 
-    form.addEventListener('submit', async (e) => {
+    uploadForm.addEventListener('submit', async (e) => {
       e.preventDefault();
       errorBox.textContent = '';
+      resultsSection.style.display = 'none';
+      resultsGrid.innerHTML = '';
 
       const files = fileInput.files;
       if (!files || !files.length) {
-        errorBox.textContent = 'Please choose at least one image.';
+        errorBox.textContent = 'No files selected.';
         return;
       }
 
-      const formData = new FormData();
-      for (let i = 0; i < files.length; i++) formData.append('file', files[i]);
+      // POST to backend /predict
+      const fd = new FormData();
+      for (let i = 0; i < files.length; i++) fd.append('file', files[i]);
 
-      btn.disabled = true;
       loader.style.display = 'flex';
-
       try {
-        const res = await fetch(API_URL, { method: 'POST', body: formData });
-        if (!res.ok) {
-          const text = await res.text().catch(()=>'');
-          throw new Error(`API error (${res.status}): ${text || res.statusText}`);
-        }
-        const data = await res.json();
+        const resp = await fetch(`${BACKEND_URL}/predict`, {
+          method: 'POST',
+          body: fd,
+        });
 
-        // Render results aligned with original file order via "index"
+        if (!resp.ok) {
+          const msg = await safeError(resp);
+          throw new Error(msg || `Request failed with status ${resp.status}`);
+        }
+
+        const data = await resp.json();
+        if (!data || !Array.isArray(data.results)) {
+          throw new Error('Unexpected response from server.');
+        }
+
+        // Render results matched to previews using the returned file "index"
+        // If any indexes are missing (skipped invalid files), we just show those we have.
+        const byIndex = new Map(data.results.map(r => [r.index, r]));
         resultsGrid.innerHTML = '';
-        const map = new Map(data.results.map(r => [r.index, r]));
-        for (let i = 0; i < files.length; i++) {
-          const url = URL.createObjectURL(files[i]);
-          const r = map.get(i);
-          let label = 'Invalid';
-          let real = '-', fake = '-';
-          let labelClass = 'fake';
-          if (r) {
-            label = r.label === 'Real' ? '🟢 Real' : '🔴 Fake';
-            labelClass = r.label === 'Real' ? 'real' : 'fake';
-            real = r.real_conf;
-            fake = r.fake_conf;
-          }
+        for (let i = 0; i < previews.length; i++) {
+          const r = byIndex.get(i);
+          if (!r) continue; // skipped invalid/unsupported files on server
+          const labelClass = r.label.includes('Fake') ? 'fake' : 'real';
           const card = document.createElement('div');
           card.className = 'result-card';
           card.innerHTML = `
-            <img src="${url}" alt="result">
-            <div class="label ${labelClass}">${label}</div>
-            <div class="conf">Real: ${real}% | Fake: ${fake}%</div>
+            <img src="${previews[i]}" alt="result">
+            <div class="label ${labelClass}">${r.label}</div>
+            <div class="conf">Real: ${r.real_conf}% | Fake: ${r.fake_conf}%</div>
           `;
           resultsGrid.appendChild(card);
         }
         resultsSection.style.display = 'block';
+
       } catch (err) {
-        console.error(err);
-        errorBox.textContent = err.message || 'Request failed.';
+        errorBox.textContent = err.message || 'Failed to analyze images.';
       } finally {
-        btn.disabled = false;
         loader.style.display = 'none';
       }
     });
+
+    function readAsDataURL(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = e => resolve(e.target.result);
+        reader.onerror = e => reject(e);
+        reader.readAsDataURL(file);
+      });
+    }
+
+    async function safeError(resp) {
+      try { const t = await resp.text(); return t; } catch { return null; }
+    }
   </script>
 </body>
 </html>
