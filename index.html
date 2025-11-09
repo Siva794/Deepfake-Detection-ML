@@ -6,22 +6,44 @@
   <title>Deepfake Detector</title>
   <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;500;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
-  <meta name="color-scheme" content="light dark">
+  <style>
+    /* Minimal sensible defaults even if style.css is missing */
+    body{font-family:Poppins,system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;background:#0b0c10;color:#e6e6e6}
+    .navbar{position:sticky;top:0;background:#11141a;padding:14px 18px;border-bottom:1px solid #272a33}
+    .nav-title{font-weight:700}
+    .container{max-width:980px;margin:32px auto;padding:0 16px}
+    .subtitle{font-weight:300;opacity:.9}
+    .upload-box{border:2px dashed #3b3f4a;border-radius:12px;display:flex;align-items:center;justify-content:center;height:160px;margin:18px 0;cursor:pointer}
+    #file{display:none}
+    #detectBtn{padding:12px 18px;border:0;border-radius:10px;background:#4c7cf3;color:#fff;font-weight:600;cursor:pointer}
+    .preview-grid,.results-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:14px;margin-top:18px}
+    .preview-card,.result-card{background:#131722;border:1px solid #2a2e39;border-radius:12px;overflow:hidden}
+    .preview-card img,.result-card img{width:100%;display:block;aspect-ratio:1/1;object-fit:cover}
+    .label{padding:8px 10px;font-weight:700}
+    .label.real{color:#19c37d}.label.fake{color:#ff6b6b}
+    .conf{padding:0 10px 10px 10px;font-size:.9rem;opacity:.9}
+    .loader{display:none;align-items:center;gap:10px;margin:16px 0}
+    .spinner{width:18px;height:18px;border:3px solid #3b3f4a;border-top-color:#4c7cf3;border-radius:50%;animation:spin 1s linear infinite}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    .fade-in{animation:fade .4s ease}@keyframes fade{from{opacity:.2}to{opacity:1}}
+    .error{background:#2a1b1b;border:1px solid #5a2b2b;color:#ffb1b1;padding:10px 12px;border-radius:10px;margin-top:14px}
+  </style>
 </head>
-
 <body>
-  <!-- Navbar -->
-  <nav class="navbar" role="navigation" aria-label="main">
+  <nav class="navbar">
     <div class="nav-title">🧠 Deepfake Detector</div>
   </nav>
 
-  <!-- Main Content -->
-  <main class="container">
+  <div class="container">
     <h2 class="subtitle">Detect if your image is AI-generated or real</h2>
 
-    <form id="uploadForm" action="/predict" method="post" enctype="multipart/form-data" novalidate>
-      <label id="dropzone" class="upload-box" for="file" tabindex="0" aria-label="Upload images: click or drag files here">
-        <input type="file" id="file" name="file" accept="image/*" multiple required>
+    {% if error %}
+      <div class="error">{{ error }}</div>
+    {% endif %}
+
+    <form id="uploadForm" action="/predict" method="post" enctype="multipart/form-data">
+      <label class="upload-box" for="file" id="dropZone">
+        <input type="file" id="file" name="file" accept="image/*" multiple required />
         <span id="uploadText">📁 Click or drag multiple images here</span>
       </label>
       <button type="submit" id="detectBtn">🔍 Analyze Images</button>
@@ -29,100 +51,74 @@
 
     <div id="previewContainer" class="preview-grid" aria-live="polite"></div>
 
-    <div id="loader" class="loader" aria-hidden="true">
-      <div class="spinner" aria-label="Loading"></div>
+    <div id="loader" class="loader">
+      <div class="spinner" aria-hidden="true"></div>
       <p>Analyzing images...</p>
     </div>
 
     {% if results %}
-    <section class="results-section" aria-label="Results">
-      <h2>🔍 Results</h2>
-      <div class="results-grid">
-        {% for r in results %}
-        <article class="result-card fade-in">
-          <img src="{{ r.src }}" alt="Analyzed image preview">
-          <div class="label {% if 'Fake' in r.label %}fake{% else %}real{% endif %}">{{ r.label }}</div>
-          <div class="conf">Real: {{ r.real_conf }}% | Fake: {{ r.fake_conf }}%</div>
-        </article>
-        {% endfor %}
+      <div class="results-section">
+        <h2>🔍 Results</h2>
+        <div class="results-grid">
+          {% for r in results %}
+          <div class="result-card fade-in">
+            <img src="{{ r.img }}" alt="Uploaded image preview">
+            <div class="label {% if 'Fake' in r.label %}fake{% else %}real{% endif %}">{{ r.label }}</div>
+            <div class="conf">Real: {{ r.real_conf }}% | Fake: {{ r.fake_conf }}%</div>
+          </div>
+          {% endfor %}
+        </div>
       </div>
-    </section>
     {% endif %}
-  </main>
+  </div>
 
   <script>
-    (function () {
-      const fileInput = document.getElementById('file');
-      const form = document.getElementById('uploadForm');
-      const previewContainer = document.getElementById('previewContainer');
-      const loader = document.getElementById('loader');
-      const detectBtn = document.getElementById('detectBtn');
-      const dropzone = document.getElementById('dropzone');
+    const fileInput = document.getElementById('file');
+    const form = document.getElementById('uploadForm');
+    const previewContainer = document.getElementById('previewContainer');
+    const loader = document.getElementById('loader');
+    const dropZone = document.getElementById('dropZone');
 
-      function clearPreviews() {
-        previewContainer.innerHTML = '';
+    // Show client-side previews before submit
+    fileInput.addEventListener('change', () => {
+      previewContainer.innerHTML = '';
+      const { files } = fileInput;
+      for (const f of files) {
+        const reader = new FileReader();
+        reader.onload = e => {
+          const div = document.createElement('div');
+          div.className = 'preview-card';
+          div.innerHTML = `<img alt="preview" src="${e.target.result}">`;
+          previewContainer.appendChild(div);
+        };
+        reader.readAsDataURL(f);
       }
+    });
 
-      function previewImages(files) {
-        clearPreviews();
-        const MAX_PREVIEWS = 24; // UX cap only
-        Array.from(files).slice(0, MAX_PREVIEWS).forEach(file => {
-          const reader = new FileReader();
-          reader.onload = (e) => {
-            const div = document.createElement('div');
-            div.className = 'preview-card';
-            div.innerHTML = `<img src="${e.target.result}" alt="preview">`;
-            previewContainer.appendChild(div);
-          };
-          reader.readAsDataURL(file);
-        });
+    // Simple drag & drop UX
+    ['dragenter','dragover'].forEach(evt =>
+      dropZone.addEventListener(evt, e => { e.preventDefault(); dropZone.style.borderColor = '#4c7cf3'; })
+    );
+    ['dragleave','drop'].forEach(evt =>
+      dropZone.addEventListener(evt, e => { e.preventDefault(); dropZone.style.borderColor = '#3b3f4a'; })
+    );
+    dropZone.addEventListener('drop', e => {
+      const dt = e.dataTransfer;
+      if (dt && dt.files) {
+        fileInput.files = dt.files;
+        fileInput.dispatchEvent(new Event('change'));
       }
+    });
 
-      // Input change
-      fileInput.addEventListener('change', (e) => {
-        if (e.target.files && e.target.files.length) previewImages(e.target.files);
-      });
-
-      // Drag & drop
-      ['dragenter','dragover'].forEach(ev => {
-        dropzone.addEventListener(ev, (e) => { e.preventDefault(); dropzone.classList.add('drag'); });
-      });
-      ['dragleave','drop'].forEach(ev => {
-        dropzone.addEventListener(ev, (e) => { e.preventDefault(); dropzone.classList.remove('drag'); });
-      });
-      dropzone.addEventListener('drop', (e) => {
-        const dt = e.dataTransfer;
-        if (dt && dt.files) {
-          fileInput.files = dt.files;
-          previewImages(dt.files);
-        }
-      });
-      // Keyboard support
-      dropzone.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') fileInput.click();
-      });
-
-      function showLoader() {
-        loader.style.display = 'flex';
-        loader.setAttribute('aria-hidden', 'false');
+    // Prevent empty submit + show loader
+    form.addEventListener('submit', (e) => {
+      if (!fileInput.files.length) {
+        e.preventDefault();
+        alert('Please choose at least one image.');
+        return;
       }
-      function hideLoader() {
-        loader.style.display = 'none';
-        loader.setAttribute('aria-hidden', 'true');
-      }
-
-      form.addEventListener('submit', () => {
-        // Prevent double submit
-        detectBtn.disabled = true;
-        showLoader();
-      });
-
-      // Hide loader if user navigates back
-      window.addEventListener('pageshow', () => {
-        detectBtn.disabled = false;
-        hideLoader();
-      });
-    })();
+      loader.style.display = 'flex';
+    });
   </script>
 </body>
 </html>
