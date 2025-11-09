@@ -6,70 +6,141 @@
   <title>Deepfake Detector</title>
   <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;500;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
+  <style>
+    /* minimal safe defaults if style.css missing */
+    body {font-family: Poppins, system-ui, -apple-system, sans-serif; margin:0; background:#0b0b0f; color:#eaeaf2}
+    .navbar {padding:16px; background:#14141d; border-bottom:1px solid #262637}
+    .nav-title {font-weight:700}
+    .container {max-width:1100px; margin:0 auto; padding:24px}
+    .upload-box {display:block; border:2px dashed #3b3b57; padding:28px; border-radius:12px; text-align:center; cursor:pointer}
+    .preview-grid, .results-grid {display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:16px; margin-top:16px}
+    .preview-card, .result-card {background:#14141d; border:1px solid #262637; border-radius:12px; overflow:hidden}
+    .preview-card img, .result-card img {width:100%; display:block; aspect-ratio:1/1; object-fit:cover}
+    .label {padding:8px 10px; font-weight:700}
+    .label.real {color:#1bd96a}
+    .label.fake {color:#ff5252}
+    .conf {padding:0 10px 10px 10px; font-size:14px; color:#b9b9d1}
+    .btn {margin-top:12px; padding:12px 16px; border:none; border-radius:10px; background:#5b61ff; color:white; font-weight:700; cursor:pointer}
+    .btn:disabled {opacity:.6; cursor:not-allowed}
+    .loader {display:none; align-items:center; gap:10px; margin-top:16px}
+    .spinner {width:16px; height:16px; border:3px solid #3b3b57; border-top-color:#fff; border-radius:50%; animation:spin 1s linear infinite}
+    @keyframes spin {to{transform:rotate(360deg)}}
+    .error {margin-top:12px; color:#ff7676}
+  </style>
 </head>
 <body>
-  <nav class="navbar"><div class="nav-title">🧠 Deepfake Detector</div></nav>
+  <nav class="navbar">
+    <div class="nav-title">🧠 Deepfake Detector</div>
+  </nav>
 
   <div class="container">
     <h2 class="subtitle">Detect if your image is AI-generated or real</h2>
 
-    <form id="uploadForm" action="{{ url_for('predict') }}" method="post" enctype="multipart/form-data" onsubmit="return onSubmitForm()">
+    <!-- IMPORTANT: No action="/predict" here; we handle submit in JS -->
+    <form id="uploadForm">
       <label class="upload-box" for="file">
-        <input type="file" id="file" name="file" accept="image/*" multiple required onchange="previewImages(event)">
+        <input type="file" id="file" name="file" accept="image/*" multiple required />
         <span id="uploadText">📁 Click or drag multiple images here</span>
       </label>
-      <button type="submit" id="detectBtn">🔍 Analyze Images</button>
+      <button type="submit" class="btn" id="detectBtn">🔍 Analyze Images</button>
+      <div id="loader" class="loader"><div class="spinner"></div><p>Analyzing images...</p></div>
+      <div id="error" class="error"></div>
     </form>
 
-    <div id="previewContainer" class="preview-grid" aria-live="polite"></div>
+    <div id="previewContainer" class="preview-grid"></div>
 
-    <div id="loader" class="loader" style="display:none;">
-      <div class="spinner"></div>
-      <p>Analyzing images...</p>
-    </div>
-
-    {% if error %}
-      <p class="error">{{ error }}</p>
-    {% endif %}
-
-    {% if results %}
-    <div class="results-section">
+    <div id="results" class="results-section" style="display:none;">
       <h2>🔍 Results</h2>
-      <div class="results-grid">
-        {% for r in results %}
-        <div class="result-card fade-in">
-          <img src="{{ r.data_url }}" alt="Uploaded Image preview">
-          <div class="label {% if 'Fake' in r.label %}fake{% else %}real{% endif %}">{{ r.label }}</div>
-          <div class="conf">Real: {{ r.real_conf }}% | Fake: {{ r.fake_conf }}%</div>
-        </div>
-        {% endfor %}
-      </div>
+      <div id="resultsGrid" class="results-grid"></div>
     </div>
-    {% endif %}
   </div>
 
   <script>
-    function previewImages(event) {
-      const preview = document.getElementById('previewContainer');
-      preview.innerHTML = '';
-      const files = event.target.files || [];
+    // >>>> SET THIS to your deployed Flask endpoint <<<<
+    const API_URL = "https://YOUR-BACKEND-URL/predict";
+
+    const fileInput = document.getElementById('file');
+    const previewContainer = document.getElementById('previewContainer');
+    const form = document.getElementById('uploadForm');
+    const btn = document.getElementById('detectBtn');
+    const loader = document.getElementById('loader');
+    const errorBox = document.getElementById('error');
+    const resultsSection = document.getElementById('results');
+    const resultsGrid = document.getElementById('resultsGrid');
+
+    // Show local previews (no upload)
+    fileInput.addEventListener('change', () => {
+      previewContainer.innerHTML = '';
+      const files = fileInput.files;
       for (let i = 0; i < files.length; i++) {
-        const reader = new FileReader();
-        reader.onload = e => {
-          const div = document.createElement('div');
-          div.className = 'preview-card';
-          div.innerHTML = `<img src="${e.target.result}" alt="preview">`;
-          preview.appendChild(div);
-        };
-        reader.readAsDataURL(files[i]);
+        const url = URL.createObjectURL(files[i]);
+        const div = document.createElement('div');
+        div.className = 'preview-card';
+        div.innerHTML = `<img src="${url}" alt="preview">`;
+        previewContainer.appendChild(div);
       }
-    }
-    function onSubmitForm() {
-      const files = document.getElementById('file').files;
-      if (!files || files.length === 0) return false;
-      document.getElementById('loader').style.display = 'flex';
-      return true;
-    }
+      resultsSection.style.display = 'none';
+      resultsGrid.innerHTML = '';
+      errorBox.textContent = '';
+    });
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      errorBox.textContent = '';
+
+      const files = fileInput.files;
+      if (!files || !files.length) {
+        errorBox.textContent = 'Please choose at least one image.';
+        return;
+      }
+
+      const formData = new FormData();
+      for (let i = 0; i < files.length; i++) formData.append('file', files[i]);
+
+      btn.disabled = true;
+      loader.style.display = 'flex';
+
+      try {
+        const res = await fetch(API_URL, { method: 'POST', body: formData });
+        if (!res.ok) {
+          const text = await res.text().catch(()=>'');
+          throw new Error(`API error (${res.status}): ${text || res.statusText}`);
+        }
+        const data = await res.json();
+
+        // Render results aligned with original file order via "index"
+        resultsGrid.innerHTML = '';
+        const map = new Map(data.results.map(r => [r.index, r]));
+        for (let i = 0; i < files.length; i++) {
+          const url = URL.createObjectURL(files[i]);
+          const r = map.get(i);
+          let label = 'Invalid';
+          let real = '-', fake = '-';
+          let labelClass = 'fake';
+          if (r) {
+            label = r.label === 'Real' ? '🟢 Real' : '🔴 Fake';
+            labelClass = r.label === 'Real' ? 'real' : 'fake';
+            real = r.real_conf;
+            fake = r.fake_conf;
+          }
+          const card = document.createElement('div');
+          card.className = 'result-card';
+          card.innerHTML = `
+            <img src="${url}" alt="result">
+            <div class="label ${labelClass}">${label}</div>
+            <div class="conf">Real: ${real}% | Fake: ${fake}%</div>
+          `;
+          resultsGrid.appendChild(card);
+        }
+        resultsSection.style.display = 'block';
+      } catch (err) {
+        console.error(err);
+        errorBox.textContent = err.message || 'Request failed.';
+      } finally {
+        btn.disabled = false;
+        loader.style.display = 'none';
+      }
+    });
   </script>
 </body>
 </html>
