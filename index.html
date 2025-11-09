@@ -2,73 +2,127 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Deepfake Detector</title>
   <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;500;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
+  <meta name="color-scheme" content="light dark">
 </head>
 
 <body>
   <!-- Navbar -->
-  <nav class="navbar">
+  <nav class="navbar" role="navigation" aria-label="main">
     <div class="nav-title">🧠 Deepfake Detector</div>
   </nav>
 
   <!-- Main Content -->
-  <div class="container">
+  <main class="container">
     <h2 class="subtitle">Detect if your image is AI-generated or real</h2>
 
-    <form id="uploadForm" action="/predict" method="post" enctype="multipart/form-data" onsubmit="showLoader()">
-      <label class="upload-box" for="file">
-        <input type="file" id="file" name="file" accept="image/*" multiple required onchange="previewImages(event)">
+    <form id="uploadForm" action="/predict" method="post" enctype="multipart/form-data" novalidate>
+      <label id="dropzone" class="upload-box" for="file" tabindex="0" aria-label="Upload images: click or drag files here">
+        <input type="file" id="file" name="file" accept="image/*" multiple required>
         <span id="uploadText">📁 Click or drag multiple images here</span>
       </label>
       <button type="submit" id="detectBtn">🔍 Analyze Images</button>
     </form>
 
-    <div id="previewContainer" class="preview-grid"></div>
+    <div id="previewContainer" class="preview-grid" aria-live="polite"></div>
 
-    <div id="loader" class="loader">
-      <div class="spinner"></div>
+    <div id="loader" class="loader" aria-hidden="true">
+      <div class="spinner" aria-label="Loading"></div>
       <p>Analyzing images...</p>
     </div>
 
     {% if results %}
-    <div class="results-section">
+    <section class="results-section" aria-label="Results">
       <h2>🔍 Results</h2>
       <div class="results-grid">
         {% for r in results %}
-        <div class="result-card fade-in">
-          <img src="{{ r.path }}" alt="Uploaded Image">
+        <article class="result-card fade-in">
+          <img src="{{ r.src }}" alt="Analyzed image preview">
           <div class="label {% if 'Fake' in r.label %}fake{% else %}real{% endif %}">{{ r.label }}</div>
           <div class="conf">Real: {{ r.real_conf }}% | Fake: {{ r.fake_conf }}%</div>
-        </div>
+        </article>
         {% endfor %}
       </div>
-    </div>
+    </section>
     {% endif %}
-  </div>
+  </main>
 
   <script>
-    function previewImages(event) {
+    (function () {
+      const fileInput = document.getElementById('file');
+      const form = document.getElementById('uploadForm');
       const previewContainer = document.getElementById('previewContainer');
-      previewContainer.innerHTML = '';
-      const files = event.target.files;
-      for (let i = 0; i < files.length; i++) {
-        const reader = new FileReader();
-        reader.onload = function(e) {
-          const div = document.createElement('div');
-          div.classList.add('preview-card');
-          div.innerHTML = `<img src="${e.target.result}" alt="preview">`;
-          previewContainer.appendChild(div);
-        };
-        reader.readAsDataURL(files[i]);
-      }
-    }
+      const loader = document.getElementById('loader');
+      const detectBtn = document.getElementById('detectBtn');
+      const dropzone = document.getElementById('dropzone');
 
-    function showLoader() {
-      document.getElementById('loader').style.display = 'flex';
-    }
+      function clearPreviews() {
+        previewContainer.innerHTML = '';
+      }
+
+      function previewImages(files) {
+        clearPreviews();
+        const MAX_PREVIEWS = 24; // UX cap only
+        Array.from(files).slice(0, MAX_PREVIEWS).forEach(file => {
+          const reader = new FileReader();
+          reader.onload = (e) => {
+            const div = document.createElement('div');
+            div.className = 'preview-card';
+            div.innerHTML = `<img src="${e.target.result}" alt="preview">`;
+            previewContainer.appendChild(div);
+          };
+          reader.readAsDataURL(file);
+        });
+      }
+
+      // Input change
+      fileInput.addEventListener('change', (e) => {
+        if (e.target.files && e.target.files.length) previewImages(e.target.files);
+      });
+
+      // Drag & drop
+      ['dragenter','dragover'].forEach(ev => {
+        dropzone.addEventListener(ev, (e) => { e.preventDefault(); dropzone.classList.add('drag'); });
+      });
+      ['dragleave','drop'].forEach(ev => {
+        dropzone.addEventListener(ev, (e) => { e.preventDefault(); dropzone.classList.remove('drag'); });
+      });
+      dropzone.addEventListener('drop', (e) => {
+        const dt = e.dataTransfer;
+        if (dt && dt.files) {
+          fileInput.files = dt.files;
+          previewImages(dt.files);
+        }
+      });
+      // Keyboard support
+      dropzone.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') fileInput.click();
+      });
+
+      function showLoader() {
+        loader.style.display = 'flex';
+        loader.setAttribute('aria-hidden', 'false');
+      }
+      function hideLoader() {
+        loader.style.display = 'none';
+        loader.setAttribute('aria-hidden', 'true');
+      }
+
+      form.addEventListener('submit', () => {
+        // Prevent double submit
+        detectBtn.disabled = true;
+        showLoader();
+      });
+
+      // Hide loader if user navigates back
+      window.addEventListener('pageshow', () => {
+        detectBtn.disabled = false;
+        hideLoader();
+      });
+    })();
   </script>
 </body>
 </html>
