@@ -2,25 +2,26 @@ import os
 import io
 import base64
 import logging
+from pathlib import Path
 from typing import List, Tuple
 
-from flask import Flask, render_template, request
-from werkzeug.utils import secure_filename  # still used to validate names quickly
+from flask import Flask, render_template, request, redirect, url_for
+from werkzeug.utils import secure_filename
 
 import torch
 from torch import nn
 from torchvision import transforms
 from PIL import Image, ImageFile, ImageOps, UnidentifiedImageError
 
-# ----------------------------------
-# Flask & App Config (flat, in-memory)
-# ----------------------------------
+# ---------------------------
+# Flask & Config
+# ---------------------------
 app = Flask(__name__)
 
 MAX_CONTENT_MB = int(os.getenv("MAX_CONTENT_LENGTH_MB", "10"))
 app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_MB * 1024 * 1024
 
-# Allowed file types (by extension)
+# Allowed extensions (just to reject odd uploads)
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 MAX_FILES = int(os.getenv("MAX_FILES", "12"))
 
@@ -35,27 +36,27 @@ logging.basicConfig(
 )
 logger = logging.getLogger("deepfake-app")
 
-# ----------------------------------
+# ---------------------------
 # Torch / Device
-# ----------------------------------
+# ---------------------------
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 logger.info("Using device: %s", device)
-torch.backends.cudnn.benchmark = True  # fixed 224x224 → OK to enable
+torch.backends.cudnn.benchmark = True
 
-# ----------------------------------
-# Model (same architecture as training)
-# ----------------------------------
+# ---------------------------
+# Model
+# ---------------------------
 class SimpleCNN(nn.Module):
     def __init__(self, num_classes: int = 2) -> None:
         super().__init__()
         self.features = nn.Sequential(
-            nn.Conv2d(3, 32, kernel_size=3, padding=1), nn.ReLU(),
+            nn.Conv2d(3, 32, 3, padding=1), nn.ReLU(),
             nn.MaxPool2d(2),
-            nn.Conv2d(32, 64, kernel_size=3, padding=1), nn.ReLU(),
+            nn.Conv2d(32, 64, 3, padding=1), nn.ReLU(),
             nn.MaxPool2d(2),
-            nn.Conv2d(64, 128, kernel_size=3, padding=1), nn.ReLU(),
+            nn.Conv2d(64, 128, 3, padding=1), nn.ReLU(),
             nn.MaxPool2d(2),
-            nn.Conv2d(128, 256, kernel_size=3, padding=1), nn.ReLU(),
+            nn.Conv2d(128, 256, 3, padding=1), nn.ReLU(),
             nn.AdaptiveAvgPool2d((1, 1)),
         )
         self.classifier = nn.Sequential(
@@ -64,105 +65,101 @@ class SimpleCNN(nn.Module):
             nn.Dropout(0.5),
             nn.Linear(128, num_classes),
         )
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.features(x)
         x = x.view(x.size(0), -1)
         return self.classifier(x)
 
-# Lazy singleton loader
+# Lazy singleton, flat layout: put model.pth next to app.py or set MODEL_PATH
 _model: nn.Module | None = None
-MODEL_PATH = os.getenv("MODEL_PATH", "model.pth")
+MODEL_PATH = Path(os.getenv("MODEL_PATH", "model.pth")).resolve()
 
 def get_model() -> nn.Module:
     global _model
     if _model is not None:
         return _model
-    if not os.path.exists(MODEL_PATH):
+    if not MODEL_PATH.exists():
         raise FileNotFoundError(
-            f"Model file not found at {MODEL_PATH}. Place model.pth next to app.py or set MODEL_PATH."
+            f"Model file not found at {MODEL_PATH}. Place model.pth beside app.py or set MODEL_PATH."
         )
-    model = SimpleCNN(num_classes=2)
+    m = SimpleCNN(num_classes=2)
     checkpoint = torch.load(MODEL_PATH, map_location=device)
     state_dict = checkpoint.get("model_state_dict") if isinstance(checkpoint, dict) else checkpoint
-    model.load_state_dict(state_dict)
-    model.to(device).eval()
-    _model = model
+    m.load_state_dict(state_dict)
+    m.to(device)
+    m.eval()
+    _model = m
     logger.info("Model loaded from %s", MODEL_PATH)
     return _model
 
-# ----------------------------------
+# ---------------------------
 # Preprocess
-# ----------------------------------
+# ---------------------------
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
 ])
 
-# ----------------------------------
-# Helpers (in-memory)
-# ----------------------------------
+# ---------------------------
+# Helpers (no disk writes)
+# ---------------------------
 def allowed_file(filename: str) -> bool:
-    # Quick extension check (not security by itself; Pillow open does the heavy lifting)
-    name = secure_filename(filename or "")
-    ext = os.path.splitext(name)[1].lower()
-    return ext in ALLOWED_EXTENSIONS
+    from pathlib import Path
+    return Path(filename).suffix.lower() in ALLOWED_EXTENSIONS
 
-def file_to_pil_and_data_url(file_storage) -> Tuple[Image.Image, str]:
-    """
-    Read upload into memory, return (PIL RGB image, base64 data URL for display).
-    Nothing is written to disk.
-    """
-    if not getattr(file_storage, "filename", "") or not allowed_file(file_storage.filename):
+def pil_from_upload(file_storage) -> Image.Image:
+    name = secure_filename(file_storage.filename or "")
+    if not name or not allowed_file(name):
         raise ValueError("Unsupported file type. Allowed: " + ", ".join(sorted(ALLOWED_EXTENSIONS)))
-
-    # Read bytes once
-    raw = file_storage.read()
-    if not raw:
-        raise ValueError("Empty file.")
-
-    # Validate & normalize
     try:
-        img = Image.open(io.BytesIO(raw))
+        img = Image.open(file_storage.stream)
         img = ImageOps.exif_transpose(img).convert("RGB")
+        return img
     except (UnidentifiedImageError, OSError) as e:
         raise ValueError("Invalid image file.") from e
 
-    # Create small preview (to make data URL lighter); does not affect model input
-    preview = img.copy()
-    preview.thumbnail((512, 512))  # visual only
-
+def to_data_url(img: Image.Image, max_side: int = 640) -> str:
+    """Downscale for display, return data:image/jpeg;base64,..."""
+    w, h = img.size
+    if max(w, h) > max_side:
+        scale = max_side / float(max(w, h))
+        img = img.resize((int(w * scale), int(h * scale)))
     buf = io.BytesIO()
-    # Use PNG to avoid JPEG artifacts in preview (and works for all types)
-    preview.save(buf, format="PNG", optimize=True)
-    data_url = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+    img.save(buf, format="JPEG", quality=90, optimize=True)
+    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    return f"data:image/jpeg;base64,{b64}"
 
-    return img, data_url
-
-# ----------------------------------
+# ---------------------------
 # Routes
-# ----------------------------------
+# ---------------------------
 @app.get("/")
 def home():
     return render_template("index.html")
 
-@app.post("/predict")
+# Accept GET on /predict and just redirect to home so it never 405s in the UI
+@app.route("/predict", methods=["GET", "POST"])
 def predict():
+    if request.method == "GET":
+        return redirect(url_for("home"))
+
     files = request.files.getlist("file")
     if not files:
         return render_template("index.html", error="No files uploaded!")
+
     if len(files) > MAX_FILES:
         return render_template("index.html", error=f"Too many files. Limit is {MAX_FILES} per request.")
 
-    previews: List[str] = []
-    tensors: List[torch.Tensor] = []
+    previews: List[str] = []        # base64 data URLs for display
+    tensors: List[torch.Tensor] = [] # model inputs
 
     for f in files:
+        if not getattr(f, "filename", ""):
+            continue
         try:
-            pil_img, data_url = file_to_pil_and_data_url(f)
-            previews.append(data_url)
-            tensors.append(transform(pil_img))
+            img = pil_from_upload(f)
+            previews.append(to_data_url(img))
+            tensors.append(transform(img))
         except ValueError as e:
             logger.warning("Skipping file: %s", e)
             continue
@@ -180,10 +177,10 @@ def predict():
         fake = probs[:, 1].tolist()
 
     results = []
-    for src, rp, fp in zip(previews, real, fake):
+    for data_url, rp, fp in zip(previews, real, fake):
         label = "🔴 Fake" if fp > rp else "🟢 Real"
         results.append({
-            "src": src,                # base64 data URL
+            "img": data_url,               # data URL (no disk write)
             "label": label,
             "real_conf": round(rp * 100, 2),
             "fake_conf": round(fp * 100, 2),
